@@ -1,32 +1,31 @@
 use std::fs;
 use std::io::Write;
-use std::net::{UdpSocket, Ipv4Addr};
+use std::net::{Ipv4Addr, UdpSocket};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use rustix::system::sethostname;
-
-use neli::{
-    consts::{
-        nl::NlmF,
-        rtnl::{Arphrd, Ifa, IfaF, Iff, Rta, RtAddrFamily, Rtm, RtmF, Rtn,
-               Rtprot, RtScope, RtTable},
-        socket::NlFamily,
-    },
-    nl::{NlPayload, Nlmsghdr},
-    router::synchronous::{NlRouter, NlRouterReceiverHandle},
-    rtnl::{Ifaddrmsg, IfaddrmsgBuilder, Ifinfomsg, IfinfomsgBuilder,
-           RtattrBuilder, Rtmsg, RtmsgBuilder},
-    utils::Groups,
-    types::RtBuffer,
+use neli::consts::nl::NlmF;
+use neli::consts::rtnl::{
+    Arphrd, Ifa, IfaF, Iff, RtAddrFamily, RtScope, RtTable, Rta, Rtm, RtmF, Rtn, Rtprot,
 };
+use neli::consts::socket::NlFamily;
+use neli::nl::{NlPayload, Nlmsghdr};
+use neli::router::synchronous::{NlRouter, NlRouterReceiverHandle};
+use neli::rtnl::{
+    Ifaddrmsg, IfaddrmsgBuilder, Ifinfomsg, IfinfomsgBuilder, RtattrBuilder, Rtmsg, RtmsgBuilder,
+};
+use neli::types::RtBuffer;
+use neli::utils::Groups;
+use rustix::system::sethostname;
 
 /// Set interface flags for eth0 (interface index 2) with a given mask
 fn flags_eth0(rtnl: &NlRouter, mask: Iff, set: Iff) -> Result<()> {
     let ifinfomsg = IfinfomsgBuilder::default()
         .ifi_family(RtAddrFamily::Unspecified)
-        .ifi_type(Arphrd::Ether).ifi_index(2)
-        .ifi_change(mask).ifi_flags(set)
+        .ifi_type(Arphrd::Ether)
+        .ifi_index(2)
+        .ifi_change(mask)
+        .ifi_flags(set)
         .build()?;
 
     let _: NlRouterReceiverHandle<Rtm, Ifinfomsg> =
@@ -39,9 +38,13 @@ fn flags_eth0(rtnl: &NlRouter, mask: Iff, set: Iff) -> Result<()> {
 fn route4_eth0(rtnl: &NlRouter, what: Rtm, gw: Ipv4Addr) -> Result<()> {
     let rtmsg = RtmsgBuilder::default()
         .rtm_family(RtAddrFamily::Inet)
-        .rtm_dst_len(0).rtm_src_len(0).rtm_tos(0)
-        .rtm_table(RtTable::Main).rtm_protocol(Rtprot::Boot)
-        .rtm_scope(RtScope::Universe).rtm_type(Rtn::Unicast)
+        .rtm_dst_len(0)
+        .rtm_src_len(0)
+        .rtm_tos(0)
+        .rtm_table(RtTable::Main)
+        .rtm_protocol(Rtprot::Boot)
+        .rtm_scope(RtScope::Universe)
+        .rtm_type(Rtn::Unicast)
         .rtm_flags(RtmF::empty())
         .rtattrs(RtBuffer::from_iter([
             RtattrBuilder::default()
@@ -55,20 +58,21 @@ fn route4_eth0(rtnl: &NlRouter, what: Rtm, gw: Ipv4Addr) -> Result<()> {
             RtattrBuilder::default()
                 .rta_type(Rta::Gateway)
                 .rta_payload(gw.octets().to_vec())
-                .build()?
+                .build()?,
         ]))
         .build()?;
 
-    let _: NlRouterReceiverHandle<Rtm, Rtmsg> =
-        rtnl.send(what, NlmF::CREATE | NlmF::REQUEST,
-                  NlPayload::Payload(rtmsg))?;
+    let _: NlRouterReceiverHandle<Rtm, Rtmsg> = rtnl.send(
+        what,
+        NlmF::CREATE | NlmF::REQUEST,
+        NlPayload::Payload(rtmsg),
+    )?;
 
     Ok(())
 }
 
 /// Add or delete IPv4 addresses for eth0 (interface index 2)
-fn addr4_eth0(rtnl: &NlRouter, what: Rtm, addr: Ipv4Addr, prefix_len: u8)
-                       -> Result<()> {
+fn addr4_eth0(rtnl: &NlRouter, what: Rtm, addr: Ipv4Addr, prefix_len: u8) -> Result<()> {
     let ifaddrmsg = IfaddrmsgBuilder::default()
         .ifa_family(RtAddrFamily::Inet)
         .ifa_prefixlen(prefix_len)
@@ -86,9 +90,11 @@ fn addr4_eth0(rtnl: &NlRouter, what: Rtm, addr: Ipv4Addr, prefix_len: u8)
         ]))
         .build()?;
 
-    let _: NlRouterReceiverHandle<Rtm, Ifaddrmsg> =
-        rtnl.send(what, NlmF::CREATE | NlmF::REQUEST,
-                  NlPayload::Payload(ifaddrmsg))?;
+    let _: NlRouterReceiverHandle<Rtm, Ifaddrmsg> = rtnl.send(
+        what,
+        NlmF::CREATE | NlmF::REQUEST,
+        NlPayload::Payload(ifaddrmsg),
+    )?;
 
     Ok(())
 }
@@ -103,26 +109,30 @@ fn do_dhcp(rtnl: &NlRouter) -> Result<()> {
     let socket = UdpSocket::bind("0.0.0.0:68").expect("Failed to bind");
     let mut buf = [0; 576 /* RFC 2131, Section 2 */ ];
 
-    const REQUEST: [u8; 300 /* From RFC 951: >= 60 B of options */ ] = [
-        1 /* REQUEST */, 0x1 /* Ethernet */, 6 /* hlen */, 0 /* Hops */,
-        1, 2, 3, 4 /* XID */, 0, 0 /* Seconds */, 0x80, 0x0 /* Flags */,
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, /* All-zero (four) addresses */
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, /* 16B HW address: who cares */
-        /* 32 bytes per row: 64B 'sname', plus 128B 'file' (RFC 1531) */
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-        0x63, 0x82, 0x53, 0x63, /* DHCP (magic) cookie, then options: */
-        53, 1, 1 /* DISCOVER */, 80, 0 /* Rapid commit */, 0xff, // Done
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-        0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 /* 54B paaaadding */
-    ];
+    const REQUEST: &[u8; 300 /* From RFC 951: >= 60 B of options */ ] = const_str::concat_bytes!(
+        1, // REQUEST
+        0x1, // Ethernet
+        6, // hlen
+        0, // Hops
+        [1, 2, 3, 4], // XID
+        [0, 0], // Seconds
+        [0x80, 0x0], // Flags
+        [0; 16], // All-zero (four) addresses
+        [0; 16], // 16B HW address: who cares
+        [0; 64], // 64B 'sname' (RFC 1531)
+        [0; 128], // 128B 'file' (RFC 1531)
+        [0x63, 0x82, 0x53, 0x63], // DHCP (magic) cookie
+        // options
+        [
+            53, 1, 1, // DISCOVER
+            80, 0, // Rapid commit
+        ],
+        0xff, // end
+        [0; 54], // pad
+    );
 
     socket.set_broadcast(true)?;
-    socket.send_to(&REQUEST, "255.255.255.255:67")?;
+    socket.send_to(REQUEST, "255.255.255.255:67")?;
 
     // Keep IPv6-only fast
     let _ = socket.set_read_timeout(Some(Duration::from_millis(100)));
@@ -135,36 +145,40 @@ fn do_dhcp(rtnl: &NlRouter) -> Result<()> {
         let mut netmask = Ipv4Addr::UNSPECIFIED;
         let mut router = Ipv4Addr::UNSPECIFIED;
         let mut p: usize = 240;
-        let mut resolv = fs::File::options().append(true)
-                         .open("/etc/resolv.conf")
-                         .context("Failed to open /etc/resolv.conf")?;
+        let mut resolv = fs::File::options()
+            .append(true)
+            .open("/etc/resolv.conf")
+            .context("Failed to open /etc/resolv.conf")?;
 
         while p < len {
             let o = msg[p];
             let l: u8 = msg[p + 1];
             p += 2; // Length doesn't include code and length field itself
 
-            if o == 1 {           // Option 1: Subnet Mask
-                netmask = Ipv4Addr::new(msg[p    ], msg[p + 1],
-                                        msg[p + 1], msg[p + 3]);
-            } else if o == 3 {    // Option 3: Router
-                router =  Ipv4Addr::new(msg[p    ], msg[p + 1],
-                                        msg[p + 2], msg[p + 3]);
-            } else if o == 6 {    // Option 6: Domain Name Server
+            if o == 1 {
+                // Option 1: Subnet Mask
+                netmask = Ipv4Addr::new(msg[p], msg[p + 1], msg[p + 1], msg[p + 3]);
+            } else if o == 3 {
+                // Option 3: Router
+                router = Ipv4Addr::new(msg[p], msg[p + 1], msg[p + 2], msg[p + 3]);
+            } else if o == 6 {
+                // Option 6: Domain Name Server
                 for dns_p in (p..p + l as usize).step_by(4) {
-                    let dns = Ipv4Addr::new(msg[dns_p    ], msg[dns_p + 1],
-                                            msg[dns_p + 2], msg[dns_p + 3]);
-                    resolv.write_all(format!("nameserver {}\n", dns).as_bytes())
-                          .context("Failed to write to resolv.conf")?;
+                    let dns =
+                        Ipv4Addr::new(msg[dns_p], msg[dns_p + 1], msg[dns_p + 2], msg[dns_p + 3]);
+                    resolv
+                        .write_all(format!("nameserver {}\n", dns).as_bytes())
+                        .context("Failed to write to resolv.conf")?;
                 }
-            } else if o == 0xff { // Option 255: End (of options)
+            } else if o == 0xff {
+                // Option 255: End (of options)
                 break;
             }
 
             p += l as usize;
         }
 
-        let prefix_len : u8 = netmask.to_bits().leading_ones() as u8;
+        let prefix_len: u8 = netmask.to_bits().leading_ones() as u8;
 
         // Drop temporary address and route, configure what we got instead
         route4_eth0(rtnl, Rtm::Delroute, Ipv4Addr::UNSPECIFIED)?;
@@ -192,11 +206,12 @@ fn wait_for_slaac(rtnl: &NlRouter) -> Result<()> {
     while !ll_seen || (global_wait && !global_seen) {
         let ifaddrmsg = IfaddrmsgBuilder::default()
             .ifa_family(RtAddrFamily::Inet6)
-            .ifa_prefixlen(0).ifa_scope(RtScope::Universe).ifa_index(2)
+            .ifa_prefixlen(0)
+            .ifa_scope(RtScope::Universe)
+            .ifa_index(2)
             .build()?;
 
-        let recv = rtnl.send(Rtm::Getaddr, NlmF::ROOT,
-                             NlPayload::Payload(ifaddrmsg))?;
+        let recv = rtnl.send(Rtm::Getaddr, NlmF::ROOT, NlPayload::Payload(ifaddrmsg))?;
 
         for response in recv {
             let header: Nlmsghdr<Rtm, Ifaddrmsg> = response?;
